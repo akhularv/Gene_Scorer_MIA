@@ -53,10 +53,14 @@ def load_expression_and_meta(
     ef_expr = cpm_log1p(ef_raw[gene_cols].values.astype(np.float64))
     wc_expr = cpm_log1p(wc_raw[gene_cols].values.astype(np.float64))
 
-    ef_df = ef_raw[meta_cols].copy()
-    ef_df[gene_cols] = ef_expr
-    wc_df = wc_raw[meta_cols].copy()
-    wc_df[gene_cols] = wc_expr
+    ef_df = pd.concat(
+        [ef_raw[meta_cols].reset_index(drop=True),
+         pd.DataFrame(ef_expr, columns=gene_cols)], axis=1
+    )
+    wc_df = pd.concat(
+        [wc_raw[meta_cols].reset_index(drop=True),
+         pd.DataFrame(wc_expr, columns=gene_cols)], axis=1
+    )
 
     return ef_df, wc_df, meta, gene_cols
 
@@ -104,8 +108,12 @@ def compute_priors(config: dict) -> None:
     feat0 = linear_slope(ef_y, ef_ages)
 
     # === Feature 1: developmental slope in WC (saline only) ===
-    wc_timepoints = ["E15", "P0", "P70", "P189"]
-    wc_ages = np.array([-5.0, 0.0, 70.0, 189.0])
+    # Use only timepoints present in the data
+    all_wc_timepoints = ["E15", "P0", "P70", "P189"]
+    all_wc_ages = {"E15": -5.0, "P0": 0.0, "P70": 70.0, "P189": 189.0}
+    available_wc = set(wc_df["timepoint"].unique())
+    wc_timepoints = [tp for tp in all_wc_timepoints if tp in available_wc]
+    wc_ages = np.array([all_wc_ages[tp] for tp in wc_timepoints])
     wc_means = compute_mean_by_timepoint(wc_df, gene_cols, wc_timepoints, "saline")
     wc_y = np.stack([wc_means[tp] for tp in wc_timepoints])  # [4 x n_genes]
     feat1 = linear_slope(wc_y, wc_ages)

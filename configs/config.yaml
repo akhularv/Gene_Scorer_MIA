@@ -1,83 +1,54 @@
-# MIA Gene Scoring Network — Configuration
-# All hyperparameters in one place. Override via CLI if needed.
-
-# --- Data ---
-data_dir: "data"
-output_dir: "outputs"
-
-# --- Gene / timepoint dimensions ---
-# n_genes gets set automatically from expression files during precompute
-n_genes: null
-n_timepoints: 5
-
-# Maps from label to integer index used by embeddings
-timepoint_map:
-  E15: 0
-  P0: 1
-  P13: 2
-  P70: 3
-  P189: 4
-
+animals_per_group: 2
+batch_size: 30
 condition_map:
-  saline: 0
   polyIC: 1
-
-region_map:
-  excitatory_frontal: 0
-  whole_cortex: 1
-
-# Postnatal ages for biologically-informed timepoint embedding init
-# E15 mapped to -5 (embryonic), rest are postnatal days
-timepoint_ages: [-5, 0, 13, 70, 189]
-
-# --- Model architecture ---
-metadata_dim: 32          # concat of timepoint(16) + condition(8) + region(8)
-context_dim: 128          # z vector from encoder
+  saline: 0
+context_dim: 128
+data_dir: data
+grad_clip: 1.0
 hidden_dims:
   encoder_h1: 2048
   encoder_h2: 512
   scorer_h1: 64
   scorer_h2: 32
-
-# --- Training schedule ---
-total_epochs: 200
-# Phase boundaries as fraction of total epochs
-phase1_frac: 0.20         # first 20% of epochs
-phase2_frac: 0.40         # next 40% of epochs
-phase3_frac: 0.40         # final 40% of epochs
-
-# Loss weights per phase
+lr: 0.0001
+metadata_dim: 32
+min_mean_count: 10
+n_genes: 13414
+n_timepoints: 4
+output_dir: outputs
+panel_size: 25
 phase1:
-  lambda_transfer: 1.0
   lambda_perturb: 0.0
   lambda_temporal: 0.0
-
-phase2:
   lambda_transfer: 1.0
+phase1_frac: 0.2
+phase2:
   lambda_perturb: 0.3
   lambda_temporal: 0.05
-
-phase3:
   lambda_transfer: 1.0
+phase2_frac: 0.4
+phase3:
   lambda_perturb: 1.0
   lambda_temporal: 0.1
-
-# --- Optimization ---
-lr: 1.0e-4
-weight_decay: 1.0e-4
-grad_clip: 1.0
-
-# --- Batching ---
-batch_size: 30             # ~24-36 animals per batch
-animals_per_group: 2       # 2-3 animals per timepoint-condition-region cell
-
-# --- Data split ---
-train_split: 0.80
-val_split: 0.20
-
-# --- Inference ---
-panel_size: 25
-
-# --- Stopping ---
+  lambda_transfer: 1.0
+phase3_frac: 0.4
+ranking_stability_patience: 15
 ranking_stability_threshold: 0.95
-ranking_stability_patience: 5
+region_map:
+  excitatory_frontal: 0
+  whole_cortex: 1
+timepoint_ages:
+- -5
+- 0
+- 13
+- 70
+timepoint_map:
+  E15: 0
+  P0: 1
+  P13: 2
+  P70: 3
+total_epochs: 200
+train_split: 0.8
+val_split: 0.2
+weight_decay: 0.0001
