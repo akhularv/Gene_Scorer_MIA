@@ -1,6 +1,8 @@
 """Per-timepoint differential expression: top 2 up- and top 2 downregulated genes.
 
 For each EF timepoint (E15, P0, P13):
+  - Loads protein-coding gene list from MIA_Data/all_counts.csv (gene_type column)
+  - Excludes mitochondrial genes (gene names starting with "mt-")
   - Computes mean raw counts per gene for polyIC vs saline
   - Classifies each gene's expression level from raw counts (High / Medium / Low)
   - Filters to highly-expressed genes only (mean raw count >= HIGH_EXPR_THRESHOLD)
@@ -34,6 +36,17 @@ MEDIUM_THRESHOLD = 100
 PSEUDO = 1.0  # pseudocount added before log2FC to avoid division by zero
 
 
+def load_protein_coding_genes(raw_counts_path: str) -> set:
+    """Return set of protein-coding, non-mitochondrial gene names from all_counts.csv."""
+    # all_counts.csv: col 0 = R row index, cols 1-7 = gene_id/chr/.../gene_type/gene_name
+    raw = pd.read_csv(raw_counts_path, index_col=0, usecols=range(8))
+    # columns are now: gene_id, chr, start, end, strand, gene_type, gene_name
+    protein_coding = raw[raw["gene_type"] == "protein_coding"]["gene_name"]
+    # Exclude mitochondrial genes (mt- prefix, case-insensitive)
+    protein_coding = protein_coding[~protein_coding.str.lower().str.startswith("mt-")]
+    return set(protein_coding)
+
+
 def classify_expression(mean_raw: float) -> str:
     if mean_raw >= HIGH_THRESHOLD:
         return "High"
@@ -46,13 +59,15 @@ def de_for_timepoint(
     tp: str,
     ef: pd.DataFrame,
     high_expr_threshold: float,
+    protein_coding_genes: set,
 ) -> pd.DataFrame:
     """Return top-2 up and top-2 down regulated, highly-expressed genes at one timepoint.
 
     Args:
-        tp:                  Timepoint label, e.g. "E15"
-        ef:                  expression_ef DataFrame (animal_id, timepoint, condition, genes...)
-        high_expr_threshold: Minimum mean raw count to be considered highly expressed
+        tp:                   Timepoint label, e.g. "E15"
+        ef:                   expression_ef DataFrame (animal_id, timepoint, condition, genes...)
+        high_expr_threshold:  Minimum mean raw count to be considered highly expressed
+        protein_coding_genes: Set of protein-coding, non-mitochondrial gene names
 
     Returns:
         DataFrame with 4 rows (2 up, 2 down), sorted by log2FC descending.
@@ -67,7 +82,9 @@ def de_for_timepoint(
     if polyic.empty or saline.empty:
         raise ValueError(f"Missing polyIC or saline samples at {tp}")
 
-    gene_cols = [c for c in ef.columns if c not in ("animal_id", "timepoint", "condition", "region")]
+    all_gene_cols = [c for c in ef.columns if c not in ("animal_id", "timepoint", "condition", "region")]
+    # Restrict to protein-coding, non-mitochondrial genes
+    gene_cols = [g for g in all_gene_cols if g in protein_coding_genes]
 
     mean_polyic = polyic[gene_cols].mean()
     mean_saline = saline[gene_cols].mean()
@@ -126,6 +143,11 @@ def main():
     data_dir   = config["data_dir"]
     output_dir = config["output_dir"]
 
+    raw_counts_path = os.path.join("MIA_Data", "all_counts.csv")
+    print(f"Loading gene type annotations from {raw_counts_path} ...")
+    protein_coding_genes = load_protein_coding_genes(raw_counts_path)
+    print(f"  {len(protein_coding_genes)} protein-coding, non-mitochondrial genes")
+
     ef_path = os.path.join(data_dir, "expression_ef.csv")
     print(f"Loading EF expression data from {ef_path} ...")
     ef = pd.read_csv(ef_path)
@@ -136,7 +158,7 @@ def main():
 
     results = []
     for tp in TIMEPOINTS:
-        tp_result = de_for_timepoint(tp, ef, args.high_expr_threshold)
+        tp_result = de_for_timepoint(tp, ef, args.high_expr_threshold, protein_coding_genes)
         results.append(tp_result)
 
     all_results = pd.concat(results, ignore_index=True)
