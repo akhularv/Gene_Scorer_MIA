@@ -6,7 +6,7 @@ integration/stream2_kalish_celltype.py
   stream2_score = weighted mean of |log2FC| (weight = n_cells per group)
 - Flags sex-specific genes: detected in male only, female only, or both
 - Flags cell-type breadth: n_cell_types_perturbed (|log2FC| >= threshold)
-- Saves stream2_top200.csv
+- Saves stream2_kalish_top200.csv
 
 Usage:
     python -m integration.stream2_kalish_celltype
@@ -18,6 +18,8 @@ import os
 
 import numpy as np
 import pandas as pd
+
+from project_paths import resolve_path
 
 
 LOG2FC_SIG = 0.5   # |log2FC| threshold to count a gene as perturbed in a cell type
@@ -35,7 +37,7 @@ def main():
     parser.add_argument("--top-n", type=int, default=TOP_N)
     args = parser.parse_args()
 
-    out_dir   = args.out_dir
+    out_dir = resolve_path(args.out_dir)
     log2fc_th = args.log2fc_threshold
 
     # --- load input ---

@@ -1,90 +1,54 @@
-"""
-predict_unseen_timepoints.py
-
-- Loads perturbation divergence scores at E15, P0, P13 from all_genes_ranked.csv
-  (these are normalized [0,1] absolute differences in log1p(CPM) between polyIC
-  and saline — the best per-gene proxy for slope divergence from the precompute step)
-- For each gene: fits both a linear and quadratic trajectory to the 3 known timepoints
-  mapped to postnatal-equivalent days: E15→-15, P0→0, P13→13
-- Selection rule: use quadratic only if it meaningfully outperforms linear (R²_quad >
-  R²_lin + 0.05) AND the extrapolated values stay within biologically plausible bounds.
-  Note: with exactly 3 data points, quadratic always fits perfectly (R²=1.0), so the
-  real gate is the bounds check preventing runaway extrapolations.
-- Extrapolates to P3 (day 3) and P7 (day 7)
-- Bootstraps 95% CIs at each predicted timepoint via residual resampling (1000 iters)
-- Ranks genes by predicted_divergence * R²  (penalizes low-confidence fits)
-- Genes with R² < 0.5 are excluded from the top-25 lists
-- Outputs: predicted_P3_P7.csv, top25_predicted_P3.csv, top25_predicted_P7.csv,
-           trajectory_fits.csv, trajectory_plots.pdf
-"""
+"""Predict P3 and P7 perturbation scores from E15, P0, and P13."""
 
 import argparse
 import os
+import tempfile
 
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "gene_scorer_mpl"))
 import matplotlib
-matplotlib.use("Agg")  # non-interactive backend — safe for PDF on any machine
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 import pandas as pd
 import yaml
 
-
-# postnatal-equivalent days for each timepoint
-KNOWN_DAYS   = [-15, 0, 13]   # E15, P0, P13 — actual data exists here
-PREDICT_DAYS = [3, 7]          # P3, P7 — extrapolation targets
-
-N_BOOTSTRAP     = 1000
-RANDOM_SEED     = 42
-LOW_R2_CUTOFF      = 0.5   # genes below this are excluded from ranked top lists
-HIGH_EXPR_THRESHOLD = 500  # minimum mean raw count across all EF samples to be included
+from project_paths import resolve_path
 
 
-# ---------------------------------------------------------------------------
-# Fitting helpers
-# ---------------------------------------------------------------------------
+KNOWN_DAYS = [-15, 0, 13]
+PREDICT_DAYS = [3, 7]
+
+N_BOOTSTRAP = 1000
+RANDOM_SEED = 42
+LOW_R2_CUTOFF = 0.5
+HIGH_EXPR_THRESHOLD = 500
 
 def r_squared(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """Standard coefficient of determination. Clamped to 0 (can't be negative)."""
+    """Return R^2, clamped at 0."""
     ss_tot = np.sum((y_true - y_true.mean()) ** 2)
     if ss_tot < 1e-12:
-        return 1.0  # constant gene — any horizontal line fits perfectly
+        return 1.0
     ss_res = np.sum((y_true - y_pred) ** 2)
     return max(0.0, 1.0 - ss_res / ss_tot)
 
 
 def fit_gene(y: np.ndarray, x: list = None):
-    """Fit linear + quadratic trajectory. Return the better-fitting model.
-
-    Selection rule:
-        Use quadratic if R²_quad > R²_lin + 0.05  AND
-        predictions at P3/P7 stay within [-2, 2] * max(|y|).
-        Otherwise, use linear (safer extrapolation with 3 points).
-
-    Returns:
-        fit_type   (str)         "linear" or "quadratic"
-        coeffs     (np.ndarray)  polynomial coefficients, highest-degree first
-        r2_linear  (float)       R² of the linear fit (used as confidence metric)
-        r2_selected(float)       R² of whichever model was chosen
-        preds      (dict)        {postnatal_day: predicted_value}
-    """
+    """Fit one gene with a linear or quadratic curve."""
     if x is None:
         x = KNOWN_DAYS
     x = np.array(x, dtype=float)
     y = np.array(y, dtype=float)
 
-    # --- linear (degree 1) ---
     lin_coeffs = np.polyfit(x, y, 1)
     r2_lin = r_squared(y, np.polyval(lin_coeffs, x))
 
-    # --- quadratic (degree 2) — always R²=1.0 with exactly 3 points ---
     quad_coeffs = np.polyfit(x, y, 2)
-    r2_quad = r_squared(y, np.polyval(quad_coeffs, x))  # will be ~1.0
+    r2_quad = r_squared(y, np.polyval(quad_coeffs, x))
 
     preds_lin  = {d: float(np.polyval(lin_coeffs,  d)) for d in PREDICT_DAYS}
     preds_quad = {d: float(np.polyval(quad_coeffs, d)) for d in PREDICT_DAYS}
 
-    # bounds check: reject quadratic if it predicts biologically absurd values
     bound = 2.0 * max(float(np.abs(y).max()), 1e-6)
     quad_in_bounds = all(abs(preds_quad[d]) <= bound for d in PREDICT_DAYS)
 
@@ -104,21 +68,7 @@ def residual_bootstrap_ci(
     n_boot: int = N_BOOTSTRAP,
     seed: int = RANDOM_SEED,
 ) -> dict:
-    """95% CIs at P3 and P7 via residual bootstrap.
-
-    Procedure:
-      1. Compute residuals from the fitted model
-      2. For each of n_boot iterations: resample residuals with replacement,
-         add to fitted values, refit same model type, predict at P3/P7
-      3. Return [2.5th, 97.5th] percentiles
-
-    Note: quadratic residuals are ~0 (perfect 3-point fit), so quadratic CIs
-    will collapse to a point. This correctly reflects no residual fit uncertainty
-    (the uncertainty is in extrapolation trend, not in interpolation accuracy).
-
-    Returns:
-        {postnatal_day: (ci_lower, ci_upper)}
-    """
+    """Bootstrap confidence intervals at P3 and P7."""
     if x is None:
         x = KNOWN_DAYS
     x = np.array(x, dtype=float)
@@ -128,7 +78,7 @@ def residual_bootstrap_ci(
     rng = np.random.default_rng(seed)
 
     y_hat = np.polyval(coeffs, x)
-    residuals = y - y_hat  # will be ~0 for quadratic
+    residuals = y - y_hat
 
     boot_preds = {d: [] for d in PREDICT_DAYS}
     for _ in range(n_boot):
@@ -144,11 +94,6 @@ def residual_bootstrap_ci(
         for d in PREDICT_DAYS
     }
 
-
-# ---------------------------------------------------------------------------
-# Plotting helper
-# ---------------------------------------------------------------------------
-
 def plot_gene_trajectory(
     ax,
     gene_name: str,
@@ -161,15 +106,13 @@ def plot_gene_trajectory(
     coeffs: np.ndarray,
     r2: float,
 ):
-    """Draw one gene's trajectory subplot."""
+    """Draw one gene panel."""
     x_known = np.array(KNOWN_DAYS, dtype=float)
 
-    # dashed fitted line spanning the full known range
     x_line = np.linspace(-15, 13, 300)
     ax.plot(x_line, np.polyval(coeffs, x_line),
             "k--", linewidth=1.2, alpha=0.65, zorder=1, label="Fit")
 
-    # shaded CI band between P3 and P7
     ax.fill_between(
         [3, 7],
         [ci_p3[0], ci_p7[0]],
@@ -177,11 +120,9 @@ def plot_gene_trajectory(
         alpha=0.18, color="steelblue", zorder=2, label="95% CI"
     )
 
-    # solid dots — known timepoints
     ax.scatter(x_known, y_known,
                color="black", s=55, zorder=5, label="Known")
 
-    # open circles with error bars — predicted timepoints
     for day, pred, ci, lbl in [(3, pred_p3, ci_p3, "P3"), (7, pred_p7, ci_p7, "P7")]:
         ax.errorbar(
             day, pred,
@@ -198,17 +139,8 @@ def plot_gene_trajectory(
     ax.set_xticklabels(["E15\n(−15)", "P0\n(0)", "P3\n(3)", "P7\n(7)", "P13\n(13)"], fontsize=7)
     ax.tick_params(labelsize=7)
 
-
-# ---------------------------------------------------------------------------
-# Gene filter
-# ---------------------------------------------------------------------------
-
 def load_high_expr_genes(ef_path: str, threshold: float = HIGH_EXPR_THRESHOLD) -> set:
-    """Return genes whose mean raw count across all EF samples meets the threshold.
-
-    expression_ef.csv columns: animal_id, timepoint, condition, [gene columns...]
-    We average over every sample row regardless of timepoint/condition.
-    """
+    """Return genes with mean EF counts above the threshold."""
     ef = pd.read_csv(ef_path)
     meta_cols = {"animal_id", "timepoint", "condition", "region"}
     gene_cols = [c for c in ef.columns if c not in meta_cols]
@@ -217,24 +149,12 @@ def load_high_expr_genes(ef_path: str, threshold: float = HIGH_EXPR_THRESHOLD) -
 
 
 def load_protein_coding_genes(raw_counts_path: str) -> set:
-    """Return protein-coding, non-mitochondrial gene names from all_counts.csv.
-
-    all_counts.csv layout: col 0 = R row index, cols 1-7 = gene metadata.
-    After index_col=0, the remaining columns are named by the header row:
-    gene_id, chr, start, end, strand, gene_type, gene_name.
-    """
+    """Return protein-coding, non-mitochondrial, non-Gm genes."""
     raw = pd.read_csv(raw_counts_path, index_col=0, usecols=range(8))
     protein_coding = raw[raw["gene_type"] == "protein_coding"]["gene_name"]
-    # drop mitochondrial genes (mt- prefix, case-insensitive)
     protein_coding = protein_coding[~protein_coding.str.lower().str.startswith("mt-")]
-    # drop predicted gene models (Gm prefix, case-insensitive)
     protein_coding = protein_coding[~protein_coding.str.lower().str.startswith("gm")]
     return set(protein_coding)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
@@ -244,15 +164,16 @@ def main():
                         help="Path to config YAML")
     parser.add_argument("--panel-size", type=int, default=None,
                         help="Number of top genes to output (default: panel_size from config)")
+    parser.add_argument("--n-bootstrap", type=int, default=N_BOOTSTRAP,
+                        help=f"Bootstrap iterations for reported panel genes (default: {N_BOOTSTRAP})")
     args = parser.parse_args()
 
-    with open(args.config) as f:
+    with open(resolve_path(args.config)) as f:
         config = yaml.safe_load(f)
 
-    output_dir = config["output_dir"]
+    output_dir = resolve_path(config["output_dir"])
     panel_size = args.panel_size or config.get("panel_size", 25)
 
-    # --- load known perturbation scores ---
     ranked_path = os.path.join(output_dir, "all_genes_ranked.csv")
     if not os.path.exists(ranked_path):
         raise FileNotFoundError(
@@ -263,8 +184,7 @@ def main():
     df = pd.read_csv(ranked_path, index_col=0)
     print(f"Loaded {len(df)} genes from {ranked_path}")
 
-    # --- filter to protein-coding, non-mitochondrial genes ---
-    raw_counts_path = os.path.join("MIA_Data", "all_counts.csv")
+    raw_counts_path = resolve_path("MIA_Data/all_counts.csv")
     if not os.path.exists(raw_counts_path):
         raise FileNotFoundError(
             f"Missing required input: {raw_counts_path}\n"
@@ -276,8 +196,7 @@ def main():
     print(f"Kept {len(df)} protein-coding, non-mitochondrial, non-Gm genes "
           f"(removed {n_before - len(df)})")
 
-    # --- filter to highly-expressed genes (mean raw count >= HIGH_EXPR_THRESHOLD) ---
-    ef_path = os.path.join(config["data_dir"], "expression_ef.csv")
+    ef_path = os.path.join(resolve_path(config["data_dir"]), "expression_ef.csv")
     if not os.path.exists(ef_path):
         raise FileNotFoundError(
             f"Missing required input: {ef_path}\n"
@@ -289,7 +208,6 @@ def main():
     print(f"Kept {len(df)} highly-expressed genes (mean raw count ≥ {HIGH_EXPR_THRESHOLD}, "
           f"removed {n_before - len(df)})")
 
-    # confirm the columns we need are present
     needed = ["gene_name", "perturbation_E15", "perturbation_P0", "perturbation_P13"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
@@ -298,11 +216,10 @@ def main():
             f"Available columns: {list(df.columns)}"
         )
 
-    # --- fit trajectories and bootstrap CIs for every gene ---
-    print(f"Fitting trajectories + bootstrapping CIs ({N_BOOTSTRAP} iters) ...")
+    print("Fitting trajectories ...")
 
-    pred_records = []   # → predicted_P3_P7.csv
-    fit_records  = []   # → trajectory_fits.csv
+    pred_records = []
+    fit_records  = []
 
     for _, row in df.iterrows():
         gene = row["gene_name"]
@@ -313,8 +230,6 @@ def main():
         ], dtype=float)
 
         fit_type, coeffs, r2_lin, r2_sel, preds = fit_gene(y)
-        ci = residual_bootstrap_ci(y, fit_type, coeffs)
-
         pred_records.append({
             "gene_name":               gene,
             "slope_divergence_E15":    float(y[0]),
@@ -324,20 +239,18 @@ def main():
             "predicted_divergence_P7": preds[7],
             "fit_type":                fit_type,
             "R2":                      r2_sel,
-            "R2_linear":               r2_lin,   # always <1, useful confidence metric
-            "CI_lower_P3":             ci[3][0],
-            "CI_upper_P3":             ci[3][1],
-            "CI_lower_P7":             ci[7][0],
-            "CI_upper_P7":             ci[7][1],
+            "R2_linear":               r2_lin,
+            "CI_lower_P3":             np.nan,
+            "CI_upper_P3":             np.nan,
+            "CI_lower_P7":             np.nan,
+            "CI_upper_P7":             np.nan,
         })
 
-        # save fit coefficients so fits are inspectable without re-running
         fit_records.append({
             "gene_name": gene,
             "fit_type":  fit_type,
             "R2":        r2_sel,
             "R2_linear": r2_lin,
-            # coeff_0 = highest-degree term (e.g., 'a' in ax²+bx+c)
             "coeff_0":   float(coeffs[0]),
             "coeff_1":   float(coeffs[1]),
             "coeff_2":   float(coeffs[2]) if len(coeffs) > 2 else np.nan,
@@ -346,12 +259,9 @@ def main():
     results = pd.DataFrame(pred_records)
     fits    = pd.DataFrame(fit_records)
 
-    # --- ranking ---
-    # negative predicted_divergence = gene converges toward baseline → ranks last naturally
     results["rank_score_P3"] = results["predicted_divergence_P3"] * results["R2"]
     results["rank_score_P7"] = results["predicted_divergence_P7"] * results["R2"]
 
-    # filter out low-confidence genes before building top lists
     high_conf = results[results["R2"] >= LOW_R2_CUTOFF].copy()
     n_low_conf = len(results) - len(high_conf)
 
@@ -362,12 +272,32 @@ def main():
               .sort_values(["rank_score_P7", "R2"], ascending=False)
               .head(panel_size))
 
-    # --- save CSVs ---
-    pred_path  = os.path.join(output_dir, "predicted_P3_P7.csv")
-    fits_path  = os.path.join(output_dir, "trajectory_fits.csv")
-    top_p3_path = os.path.join(output_dir, "top25_predicted_P3.csv")
-    top_p7_path = os.path.join(output_dir, "top25_predicted_P7.csv")
-    pdf_path   = os.path.join(output_dir, "trajectory_plots.pdf")
+    ci_genes = sorted(set(top_p3["gene_name"]) | set(top_p7["gene_name"]))
+    fit_map = fits.set_index("gene_name")
+    result_map = results.set_index("gene_name")
+    print(f"Bootstrapping CIs for {len(ci_genes)} panel genes ({args.n_bootstrap} iters) ...")
+    for gene in ci_genes:
+        rr = result_map.loc[gene]
+        fr = fit_map.loc[gene]
+        y = np.array([
+            rr["slope_divergence_E15"],
+            rr["slope_divergence_P0"],
+            rr["slope_divergence_P13"],
+        ], dtype=float)
+        if fr["fit_type"] == "quadratic":
+            coeffs = np.array([fr["coeff_0"], fr["coeff_1"], fr["coeff_2"]], dtype=float)
+        else:
+            coeffs = np.array([fr["coeff_0"], fr["coeff_1"]], dtype=float)
+        ci = residual_bootstrap_ci(y, fr["fit_type"], coeffs, n_boot=args.n_bootstrap)
+        results.loc[results["gene_name"] == gene, ["CI_lower_P3", "CI_upper_P3", "CI_lower_P7", "CI_upper_P7"]] = [
+            ci[3][0], ci[3][1], ci[7][0], ci[7][1]
+        ]
+
+    pred_path = os.path.join(output_dir, "predicted_P3_P7.csv")
+    fits_path = os.path.join(output_dir, "trajectory_fits.csv")
+    top_p3_path = os.path.join(output_dir, "predicted_P3_panel.csv")
+    top_p7_path = os.path.join(output_dir, "predicted_P7_panel.csv")
+    pdf_path = os.path.join(output_dir, "trajectory_plots.pdf")
 
     results.to_csv(pred_path,   index=False)
     fits.to_csv(fits_path,      index=False)
@@ -379,10 +309,8 @@ def main():
     print(f"Saved top-{panel_size} at P3 → {top_p3_path}")
     print(f"Saved top-{panel_size} at P7 → {top_p7_path}")
 
-    # --- trajectory plots for the top-10 P3 genes ---
     top10 = top_p3.head(10)
-    # pull their full row data from results for plotting
-    res_idx  = results.set_index("gene_name")
+    res_idx = results.set_index("gene_name")
     fits_idx = fits.set_index("gene_name")
 
     fig, axes = plt.subplots(5, 2, figsize=(11, 16))
@@ -398,7 +326,6 @@ def main():
             rr["slope_divergence_P0"],
             rr["slope_divergence_P13"],
         ])
-        # reconstruct coefficient array
         if fr["fit_type"] == "quadratic":
             coeffs = np.array([fr["coeff_0"], fr["coeff_1"], fr["coeff_2"]])
         else:
@@ -431,7 +358,6 @@ def main():
     plt.close(fig)
     print(f"Saved plots         → {pdf_path}")
 
-    # --- stdout summary ---
     lin_r2_vals = results.loc[results["fit_type"] == "linear", "R2"]
 
     print("\n" + "=" * 65)

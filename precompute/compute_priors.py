@@ -1,8 +1,4 @@
-# - Computes 5 biological prior features per gene from raw expression data
-# - Features capture developmental trajectory, cross-tissue concordance, stability, and baseline
-# - All features normalized to [0,1], saved as p_g.npy [n_genes x 5]
-# - Run once before training — nothing here is learned
-# - Expects expression_ef.csv, expression_wc.csv, metadata.csv in data_dir
+"""Compute the per-gene prior feature matrix."""
 
 import argparse
 import os
@@ -13,10 +9,12 @@ import pandas as pd
 import yaml
 from scipy.stats import spearmanr
 
+from project_paths import resolve_path
+
 
 def load_config(config_path: str) -> dict:
-    """Load YAML configuration file."""
-    with open(config_path, "r") as f:
+    """Load the YAML config."""
+    with open(resolve_path(config_path), "r") as f:
         return yaml.safe_load(f)
 
 
@@ -90,8 +88,8 @@ def linear_slope(y_vals: np.ndarray, x_vals: np.ndarray) -> np.ndarray:
 
 def compute_priors(config: dict) -> None:
     """Main function: compute p_g matrix [n_genes x 5] and save it."""
-    data_dir = config["data_dir"]
-    output_dir = config["output_dir"]
+    data_dir = resolve_path(config["data_dir"])
+    output_dir = resolve_path(config["output_dir"])
     os.makedirs(output_dir, exist_ok=True)
 
     ef_df, wc_df, meta, gene_cols = load_expression_and_meta(data_dir)
@@ -158,7 +156,7 @@ def compute_priors(config: dict) -> None:
     np.save(os.path.join(output_dir, "gene_names.npy"), np.array(gene_cols))
 
     # update config with n_genes
-    config_path = os.path.join("configs", "config.yaml")
+    config_path = resolve_path("configs/config.yaml")
     config["n_genes"] = n_genes
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False)

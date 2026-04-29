@@ -1,8 +1,4 @@
-# - Computes supervised targets for perturbation and transferability losses
-# - perturbation_targets: log-space difference between polyIC and saline per gene per timepoint
-# - transferability_targets: Pearson correlation of EF vs WC across shared condition-timepoint groups
-# - Both normalized to [0,1], saved as .npy files
-# - Run once after compute_priors.py
+"""Compute perturbation and transferability targets."""
 
 import argparse
 import os
@@ -16,6 +12,7 @@ from precompute.compute_priors import (
     load_config,
     normalize_01,
 )
+from project_paths import resolve_path
 
 
 def load_expression(
@@ -74,8 +71,8 @@ def compute_perturbation(
 
 def compute_targets(config: dict) -> None:
     """Compute perturbation and transferability targets, save as .npy."""
-    data_dir = config["data_dir"]
-    output_dir = config["output_dir"]
+    data_dir = resolve_path(config["data_dir"])
+    output_dir = resolve_path(config["output_dir"])
     os.makedirs(output_dir, exist_ok=True)
 
     ef_df, wc_df, gene_cols = load_expression(data_dir)

@@ -26,6 +26,8 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from project_paths import resolve_path
+
 
 TIMEPOINTS = ["E15", "P0", "P13"]
 
@@ -37,13 +39,11 @@ PSEUDO = 1.0  # pseudocount added before log2FC to avoid division by zero
 
 
 def load_protein_coding_genes(raw_counts_path: str) -> set:
-    """Return set of protein-coding, non-mitochondrial gene names from all_counts.csv."""
-    # all_counts.csv: col 0 = R row index, cols 1-7 = gene_id/chr/.../gene_type/gene_name
+    """Return protein-coding, non-mitochondrial genes."""
     raw = pd.read_csv(raw_counts_path, index_col=0, usecols=range(8))
-    # columns are now: gene_id, chr, start, end, strand, gene_type, gene_name
     protein_coding = raw[raw["gene_type"] == "protein_coding"]["gene_name"]
-    # Exclude mitochondrial genes (mt- prefix, case-insensitive)
     protein_coding = protein_coding[~protein_coding.str.lower().str.startswith("mt-")]
+    protein_coding = protein_coding[~protein_coding.str.lower().str.startswith("gm")]
     return set(protein_coding)
 
 
@@ -61,17 +61,7 @@ def de_for_timepoint(
     high_expr_threshold: float,
     protein_coding_genes: set,
 ) -> pd.DataFrame:
-    """Return top-2 up and top-2 down regulated, highly-expressed genes at one timepoint.
-
-    Args:
-        tp:                   Timepoint label, e.g. "E15"
-        ef:                   expression_ef DataFrame (animal_id, timepoint, condition, genes...)
-        high_expr_threshold:  Minimum mean raw count to be considered highly expressed
-        protein_coding_genes: Set of protein-coding, non-mitochondrial gene names
-
-    Returns:
-        DataFrame with 4 rows (2 up, 2 down), sorted by log2FC descending.
-    """
+    """Return the top 2 up and top 2 down genes at one timepoint."""
     subset = ef[ef["timepoint"] == tp]
     if subset.empty:
         raise ValueError(f"No EF samples found for timepoint {tp}")
@@ -83,16 +73,12 @@ def de_for_timepoint(
         raise ValueError(f"Missing polyIC or saline samples at {tp}")
 
     all_gene_cols = [c for c in ef.columns if c not in ("animal_id", "timepoint", "condition", "region")]
-    # Restrict to protein-coding, non-mitochondrial genes
     gene_cols = [g for g in all_gene_cols if g in protein_coding_genes]
 
     mean_polyic = polyic[gene_cols].mean()
     mean_saline = saline[gene_cols].mean()
 
-    # Overall mean raw expression across both conditions (for classification)
     mean_overall = subset[gene_cols].mean()
-
-    # Log2 fold-change: log2((mean_polyIC + pseudo) / (mean_saline + pseudo))
     log2fc = np.log2((mean_polyic + PSEUDO) / (mean_saline + PSEUDO))
 
     df = pd.DataFrame({
@@ -106,7 +92,6 @@ def de_for_timepoint(
 
     df["expression_class"] = df["mean_raw_overall"].apply(classify_expression)
 
-    # Keep only highly-expressed genes
     high_expr = df[df["mean_raw_overall"] >= high_expr_threshold].copy()
 
     if len(high_expr) < 4:
@@ -137,22 +122,21 @@ def main():
     )
     args = parser.parse_args()
 
-    with open(args.config, "r") as f:
+    with open(resolve_path(args.config), "r") as f:
         config = yaml.safe_load(f)
 
-    data_dir   = config["data_dir"]
-    output_dir = config["output_dir"]
+    data_dir = resolve_path(config["data_dir"])
+    output_dir = resolve_path(config["output_dir"])
 
-    raw_counts_path = os.path.join("MIA_Data", "all_counts.csv")
+    raw_counts_path = resolve_path("MIA_Data/all_counts.csv")
     print(f"Loading gene type annotations from {raw_counts_path} ...")
     protein_coding_genes = load_protein_coding_genes(raw_counts_path)
-    print(f"  {len(protein_coding_genes)} protein-coding, non-mitochondrial genes")
+    print(f"  {len(protein_coding_genes)} protein-coding, non-mitochondrial, non-Gm genes")
 
     ef_path = os.path.join(data_dir, "expression_ef.csv")
     print(f"Loading EF expression data from {ef_path} ...")
     ef = pd.read_csv(ef_path)
 
-    # Drop 'region' column if present (all rows are excitatory_frontal)
     if "region" in ef.columns:
         ef = ef.drop(columns=["region"])
 
@@ -167,7 +151,6 @@ def main():
     all_results.to_csv(out_path, index=False)
     print(f"\nSaved → {out_path}\n")
 
-    # Pretty-print
     for tp in TIMEPOINTS:
         tp_rows = all_results[all_results["timepoint"] == tp]
         print(f"{'='*72}")

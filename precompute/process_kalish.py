@@ -22,9 +22,12 @@ import argparse
 import gzip
 import os
 import re
+from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+from project_paths import resolve_path
 
 
 LOG2FC_SIG_THRESHOLD = 0.5   # |log2FC| threshold for "significant" in a group
@@ -42,7 +45,7 @@ _SAMPLE_RE = re.compile(
 )
 
 
-def parse_sample_name(filename: str) -> dict | None:
+def parse_sample_name(filename: str) -> Optional[dict]:
     """Extract condition, sex, timepoint from a counts filename.
 
     Returns None if the filename does not match the expected pattern.
@@ -109,8 +112,8 @@ def main():
     parser.add_argument("--out-dir",  type=str, default="outputs")
     args = parser.parse_args()
 
-    data_dir = args.data_dir
-    out_dir  = args.out_dir
+    data_dir = resolve_path(args.data_dir)
+    out_dir = resolve_path(args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     if not os.path.isdir(data_dir):

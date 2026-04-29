@@ -19,6 +19,8 @@ import os
 import numpy as np
 import pandas as pd
 
+from project_paths import resolve_path
+
 
 R2_THRESHOLD = 0.3    # minimum R2 for both MIA and saline slope fits
 TOP_N        = 200    # number of top genes to output
@@ -34,7 +36,7 @@ def main():
     parser.add_argument("--top-n",        type=int,   default=TOP_N)
     args = parser.parse_args()
 
-    out_dir = args.out_dir
+    out_dir = resolve_path(args.out_dir)
 
     # --- load inputs ---
     slopes_path = os.path.join(out_dir, "canales_slopes.csv")

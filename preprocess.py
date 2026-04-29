@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from project_paths import resolve_path
+
 
 def normalize_sample_id(sid: str) -> str:
     """Normalize sample ID: strip trailing _, remove trailing _S/_P suffix,
@@ -63,16 +65,14 @@ def main():
     parser.add_argument("--config", type=str, default="configs/config.yaml")
     args = parser.parse_args()
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    config_path = os.path.join(base_dir, args.config)
+    config_path = resolve_path(args.config)
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
     min_mean_count = config.get("min_mean_count", 10)
 
-    raw_dir = os.path.join(base_dir, "MIA_Data")
-    out_dir = os.path.join(base_dir, "data")
+    raw_dir = resolve_path("MIA_Data")
+    out_dir = resolve_path("data")
     os.makedirs(out_dir, exist_ok=True)
 
     # ----------------------------------------------------------------

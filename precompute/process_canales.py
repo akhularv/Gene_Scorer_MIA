@@ -24,9 +24,12 @@ import glob
 import gzip
 import os
 import re
+from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+from project_paths import resolve_path
 
 
 # Postnatal-equivalent days for Canales timepoints
@@ -136,7 +139,7 @@ def load_de_table(fpath: str) -> pd.DataFrame:
               [c for c in ["fdr", "pvalue", "lr", "wgcna_module"] if c in df.columns]]
 
 
-def find_raw_counts(data_dir: str) -> str | None:
+def find_raw_counts(data_dir: str) -> Optional[str]:
     """Find the raw count matrix in data_dir. Returns path or None."""
     patterns = ["*count*", "*raw*", "*matrix*", "*expression*"]
     for pat in patterns:
@@ -380,8 +383,8 @@ def main():
     parser.add_argument("--out-dir",   type=str, default="outputs")
     args = parser.parse_args()
 
-    data_dir = args.data_dir
-    out_dir  = args.out_dir
+    data_dir = resolve_path(args.data_dir)
+    out_dir = resolve_path(args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     if not os.path.isdir(data_dir):

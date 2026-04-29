@@ -24,6 +24,8 @@ import urllib.error
 
 import pandas as pd
 
+from project_paths import resolve_path
+
 
 GEO_ACCESSION   = "GSE166376"
 FTP_HOST        = "ftp.ncbi.nlm.nih.gov"
@@ -192,7 +194,7 @@ def main():
     )
     args = parser.parse_args()
 
-    out_dir = args.out_dir
+    out_dir = resolve_path(args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
     print(f"\nDownloading {GEO_ACCESSION} → {out_dir}/\n")
 

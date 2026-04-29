@@ -90,20 +90,10 @@ Place three CSV files in `data/`:
   For each gene g, for each timepoint t:
     cohort_rank_score_g_t = median(rank_score_g across polyIC animals at t)
 
-  global_rank_score_g = mean(cohort_rank_score_g_t across timepoints)
+  rank_score_g = mean(cohort_rank_score_g_t across timepoints)
 
-  Output: top-25 genes by global_rank_score
+  Output: top panel genes by rank_score
 ```
-
-## Training Phases
-
-| Phase | Steps     | L_transfer | L_perturb | L_temporal | Goal                                    |
-|-------|-----------|------------|-----------|------------|-----------------------------------------|
-| 1     | 0-20%     | 1.0        | 0.0       | 0.0        | Encoder warm-up: z clusters by timepoint|
-| 2     | 20-60%    | 1.0        | 0.3       | 0.05       | Introduce perturbation signal gently    |
-| 3     | 60-100%   | 1.0        | 1.0       | 0.1        | Full training, all losses active        |
-
-**Stopping criterion**: Top-25 gene ranking Spearman > 0.95 for 5 consecutive epochs.
 
 ## How to Run the Full Pipeline
 
@@ -115,24 +105,23 @@ pip install torch numpy scipy pandas pyyaml
 cp expression_ef.csv expression_wc.csv metadata.csv project/data/
 
 # 3. Precompute priors and targets (run once)
-cd project
 python -m precompute.compute_priors --config configs/config.yaml
 python -m precompute.compute_targets --config configs/config.yaml
 
-# 4. Train the model
-python -m training.train --config configs/config.yaml
+# 4. Build the main ranked panel
+python -m inference.direct_score --config configs/config.yaml
 
-# 5. Score genes and export panel
-python -m inference.score_genes --config configs/config.yaml --checkpoint outputs/best_model.pt
-python -m inference.export_panel --config configs/config.yaml --scores outputs/gene_scores.npz
+# 5. Build one panel per measured timepoint
+python -m inference.score_by_timepoint --config configs/config.yaml
 
-# 6. Run tests (optional, uses synthetic data)
-python -m pytest tests/test_model.py -v
+# 6. Predict P3 and P7 panels
+python -m inference.predict_unseen_timepoints --config configs/config.yaml
 ```
 
 ## What the Output Means Biologically
 
-The final table (`top25_panel.csv`) contains 25 genes ranked by `global_rank_score`.
+The final table (`top_panel.csv`) contains the top `panel_size` protein-coding
+genes ranked by `rank_score`. The default config exports 50 genes.
 
 - **perturbation_score** (per timepoint): How strongly MIA treatment (Poly I:C)
   disrupts this gene's expression compared to saline controls, at each developmental
@@ -143,7 +132,7 @@ The final table (`top25_panel.csv`) contains 25 genes ranked by `global_rank_sco
   score = the neuron-specific signal survives dilution by other cell types. If this is
   low, the gene might be disrupted in neurons but invisible in bulk qPCR.
 
-- **global_rank_score**: Product of perturbation and transferability, averaged across
+- **rank_score**: Product of perturbation and transferability, averaged across
   timepoints. Both must be high for a gene to rank well. This is the number you use to
   pick qPCR primers.
 
@@ -176,8 +165,8 @@ outperforms the linear fit (R² improvement > 0.05) AND its extrapolated values 
 within biologically plausible bounds (within 2× the maximum observed divergence) —
 this prevents runaway extrapolations from noisy trajectories. Predictions are weighted
 by fit quality (R²), and genes with R² < 0.5 are excluded from the ranked outputs.
-Bootstrap confidence intervals (1000 residual resamples) are computed at each predicted
-timepoint.
+Bootstrap confidence intervals (1000 residual resamples) are computed for the reported
+P3/P7 panel genes.
 
 ### Confidence caveat
 
@@ -201,7 +190,7 @@ ranking, but even high-R² linear predictions should be validated experimentally
 | Script | Description |
 |--------|-------------|
 | `inference/predict_unseen_timepoints.py` | Fits trajectories, predicts P3/P7, generates CSVs and plots |
-| `inference/compare_known_vs_predicted.py` | Compares known top-25 to predicted lists, flags novel/resolving genes |
+| `inference/compare_known_vs_predicted.py` | Compares the known panel to predicted lists, flags novel/resolving genes |
 
 ```bash
 # Run predictions first
@@ -215,10 +204,10 @@ python -m inference.compare_known_vs_predicted
 
 | File | Contents |
 |------|----------|
-| `outputs/predicted_P3_P7.csv` | All genes with predicted divergence, fit type, R², CIs at P3 and P7 |
+| `outputs/predicted_P3_P7.csv` | All genes with predicted divergence and fit statistics; CI columns are filled for panel genes |
 | `outputs/trajectory_fits.csv` | Fit coefficients per gene — inspect fits without re-running |
-| `outputs/top25_predicted_P3.csv` | Top-25 genes ranked by predicted divergence × R² at P3 |
-| `outputs/top25_predicted_P7.csv` | Top-25 genes ranked by predicted divergence × R² at P7 |
+| `outputs/predicted_P3_panel.csv` | Top panel genes ranked by predicted divergence × R² at P3 |
+| `outputs/predicted_P7_panel.csv` | Top panel genes ranked by predicted divergence × R² at P7 |
 | `outputs/trajectory_plots.pdf` | Trajectory plots for the top-10 P3 genes |
 | `outputs/comparison_table.csv` | Gene-level boolean table: in_known, in_P3, in_P7, novel, resolves |
 
@@ -228,7 +217,7 @@ python -m inference.compare_known_vs_predicted
 
 ### Why integrate external datasets
 
-The internal dataset (expression_ef.csv) comes from a single lab, a single MIA protocol, and a single RNA-seq run. Any gene that appears in the top-25 purely due to technical artifacts, batch effects, or lab-specific biology will be silently propagated downstream into qPCR panels. Cross-referencing against independent datasets with different platforms, different MIA protocols, and different tissue contexts (bulk vs scRNA-seq) provides a principled confidence filter. A gene with strong signal in all three independent datasets is much less likely to be a false positive.
+The internal dataset (expression_ef.csv) comes from a single lab, a single MIA protocol, and a single RNA-seq run. Any gene that appears in the internal panel purely due to technical artifacts, batch effects, or lab-specific biology will be silently propagated downstream into qPCR panels. Cross-referencing against independent datasets with different platforms, different MIA protocols, and different tissue contexts (bulk vs scRNA-seq) provides a principled confidence filter. A gene with strong signal in all three independent datasets is much less likely to be a false positive.
 
 ### Data sources
 
@@ -296,7 +285,7 @@ python -m integration.compare_to_existing       # → cross_validation_report.cs
 | `outputs/stream2_kalish_top200.csv` | Top-200 genes ranked by stream2_score |
 | `outputs/combined_streams_all.csv` | All genes with combined scores and evidence tier |
 | `outputs/generalizable_core_panel.csv` | Top-100 genes from combined ranking (confidence-tiered) |
-| `outputs/cross_validation_report.csv` | Comparison of core panel vs existing top-25 |
+| `outputs/cross_validation_report.csv` | Comparison of core panel vs the existing internal panel |
 
 ### Known limitations
 

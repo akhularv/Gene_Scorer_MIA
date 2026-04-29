@@ -1,14 +1,4 @@
-"""Direct gene scoring from precomputed targets — no neural network needed.
-
-With ~80 animals, the precomputed |log2FC| (perturbation) and Spearman
-(transferability) statistics are already the best estimates of each gene's
-suitability for a qPCR panel. This script ranks genes by:
-
-    rank_score = mean_perturbation * transferability
-
-Both must be high for a gene to rank well, exactly matching the neural
-network's intended multiplicative scoring.
-"""
+"""Rank genes from the precomputed perturbation and transfer scores."""
 
 import argparse
 import os
@@ -16,6 +6,17 @@ import os
 import numpy as np
 import pandas as pd
 import yaml
+
+from project_paths import resolve_path
+
+
+def load_protein_coding_genes(raw_counts_path: str) -> set:
+    """Return protein-coding, non-mitochondrial, non-Gm genes."""
+    raw = pd.read_csv(raw_counts_path, index_col=0, usecols=range(8))
+    genes = raw[raw["gene_type"] == "protein_coding"]["gene_name"]
+    genes = genes[~genes.str.lower().str.startswith("mt-")]
+    genes = genes[~genes.str.lower().str.startswith("gm")]
+    return set(genes)
 
 
 def main():
@@ -25,17 +26,16 @@ def main():
                         help="Override panel size from config")
     args = parser.parse_args()
 
-    with open(args.config, "r") as f:
+    with open(resolve_path(args.config), "r") as f:
         config = yaml.safe_load(f)
 
-    output_dir = config["output_dir"]
+    output_dir = resolve_path(config["output_dir"])
     panel_size = args.panel_size or config["panel_size"]
 
-    # load precomputed targets
-    perturb = np.load(os.path.join(output_dir, "perturbation_targets.npy"))  # [n_genes x 3]
-    transfer = np.load(os.path.join(output_dir, "transferability_targets.npy"))  # [n_genes]
+    perturb = np.load(os.path.join(output_dir, "perturbation_targets.npy"))
+    transfer = np.load(os.path.join(output_dir, "transferability_targets.npy"))
     gene_names = np.load(os.path.join(output_dir, "gene_names.npy"), allow_pickle=True)
-    priors = np.load(os.path.join(output_dir, "p_g.npy"))  # [n_genes x 5]
+    priors = np.load(os.path.join(output_dir, "p_g.npy"))
 
     n_genes = len(gene_names)
     ef_timepoints = ["E15", "P0", "P13"]
@@ -44,14 +44,8 @@ def main():
     print(f"Perturbation targets shape: {perturb.shape}")
     print(f"Transferability targets shape: {transfer.shape}")
 
-    # --- Per-timepoint perturbation scores (already normalized [0,1]) ---
-    # perturb[:, 0] = E15, perturb[:, 1] = P0, perturb[:, 2] = P13
-    mean_perturb = perturb.mean(axis=1)  # average across timepoints
-
-    # --- Rank score = perturbation * transferability ---
+    mean_perturb = perturb.mean(axis=1)
     rank_score = mean_perturb * transfer
-
-    # --- Build full results table ---
     results = pd.DataFrame({
         "gene_name": gene_names,
         "perturbation_E15": perturb[:, 0],
@@ -60,7 +54,6 @@ def main():
         "mean_perturbation": mean_perturb,
         "transferability": transfer,
         "rank_score": rank_score,
-        # include priors for reference
         "prior_dev_slope_ef": priors[:, 0],
         "prior_dev_slope_wc": priors[:, 1],
         "prior_direction_concordance": priors[:, 2],
@@ -68,23 +61,25 @@ def main():
         "prior_baseline_expr": priors[:, 4],
     })
 
-    # sort by rank_score descending
+    raw_counts_path = resolve_path("MIA_Data/all_counts.csv")
+    if os.path.exists(raw_counts_path):
+        protein_coding = load_protein_coding_genes(raw_counts_path)
+        before = len(results)
+        results = results[results["gene_name"].isin(protein_coding)].copy()
+        print(f"Kept {len(results)} protein-coding genes (removed {before - len(results)})")
+
     results = results.sort_values("rank_score", ascending=False).reset_index(drop=True)
     results.index.name = "rank"
-    results.index = results.index + 1  # 1-indexed
-
-    # --- Save full ranked list ---
+    results.index = results.index + 1
     full_path = os.path.join(output_dir, "all_genes_ranked.csv")
     results.to_csv(full_path)
     print(f"\nSaved full ranking: {full_path}")
 
-    # --- Save top panel ---
     top = results.head(panel_size)
-    panel_path = os.path.join(output_dir, "top25_panel.csv")
+    panel_path = os.path.join(output_dir, "top_panel.csv")
     top.to_csv(panel_path)
     print(f"Saved top-{panel_size} panel: {panel_path}")
 
-    # --- Print top panel ---
     print(f"\n{'='*80}")
     print(f"TOP {panel_size} GENES FOR qPCR PANEL")
     print(f"{'='*80}")
@@ -94,14 +89,12 @@ def main():
         print(f"{i:<6}{row['gene_name']:<15}{row['mean_perturbation']:<10.4f}"
               f"{row['transferability']:<10.4f}{row['rank_score']:<10.4f}")
 
-    # --- Summary stats ---
     print(f"\n--- Panel summary ---")
     print(f"Mean perturbation:    {top['mean_perturbation'].mean():.4f}")
     print(f"Mean transferability: {top['transferability'].mean():.4f}")
     print(f"Mean rank score:      {top['rank_score'].mean():.4f}")
     print(f"Min rank score:       {top['rank_score'].min():.4f}")
 
-    # --- Per-timepoint breakdown ---
     print(f"\n--- Per-timepoint perturbation (panel genes) ---")
     for j, tp in enumerate(ef_timepoints):
         col = f"perturbation_{tp}"

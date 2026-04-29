@@ -17,7 +17,7 @@ min_mean_count: 10
 n_genes: 13414
 n_timepoints: 4
 output_dir: outputs
-panel_size: 25
+panel_size: 50
 phase1:
   lambda_perturb: 0.0
   lambda_temporal: 0.0

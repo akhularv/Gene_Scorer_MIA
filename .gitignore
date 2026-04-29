@@ -1,2 +1,9 @@
 data/
 MIA_Data/
+outputs/
+.DS_Store
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.swp
+.Rhistory

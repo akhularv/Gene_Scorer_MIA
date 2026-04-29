@@ -22,6 +22,8 @@ import os
 import numpy as np
 import pandas as pd
 
+from project_paths import resolve_path
+
 
 TOP_N = 200    # penalty rank for genes absent from one stream
 
@@ -50,7 +52,7 @@ def main():
                              "(default: 100)")
     args = parser.parse_args()
 
-    out_dir  = args.out_dir
+    out_dir = resolve_path(args.out_dir)
     penalty  = args.top_n + 1
 
     # --- load streams ---

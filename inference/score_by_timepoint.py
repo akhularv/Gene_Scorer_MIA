@@ -1,17 +1,4 @@
-"""Per-timepoint gene scoring from precomputed targets.
-
-For each timepoint (E15, P0, P13), ranks genes by:
-
-    rank_score = perturbation_at_timepoint * transferability
-
-Both must be high — genes that are strongly perturbed at that specific
-developmental stage AND whose signal survives dilution in bulk tissue.
-
-Outputs three CSVs:
-    outputs/panel_E15.csv
-    outputs/panel_P0.csv
-    outputs/panel_P13.csv
-"""
+"""Rank genes at each measured developmental stage."""
 
 import argparse
 import os
@@ -20,8 +7,19 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from project_paths import resolve_path
 
-TIMEPOINTS = ["E15", "P0", "P13"]  # column order in perturbation_targets.npy
+
+TIMEPOINTS = ["E15", "P0", "P13"]
+
+
+def load_protein_coding_genes(raw_counts_path: str) -> set:
+    """Return protein-coding, non-mitochondrial, non-Gm genes."""
+    raw = pd.read_csv(raw_counts_path, index_col=0, usecols=range(8))
+    genes = raw[raw["gene_type"] == "protein_coding"]["gene_name"]
+    genes = genes[~genes.str.lower().str.startswith("mt-")]
+    genes = genes[~genes.str.lower().str.startswith("gm")]
+    return set(genes)
 
 
 def score_timepoint(
@@ -33,22 +31,9 @@ def score_timepoint(
     priors: np.ndarray,
     panel_size: int,
     output_dir: str,
+    protein_coding_genes: set,
 ) -> pd.DataFrame:
-    """Score and export genes for a single timepoint.
-
-    Args:
-        tp:          Timepoint label, e.g. "E15"
-        tp_idx:      Column index in perturb array (0=E15, 1=P0, 2=P13)
-        perturb:     [n_genes x 3] perturbation scores per timepoint
-        transfer:    [n_genes] transferability scores
-        gene_names:  [n_genes] gene name strings
-        priors:      [n_genes x 5] precomputed prior features
-        panel_size:  How many top genes to include
-        output_dir:  Where to write the CSV
-
-    Returns:
-        DataFrame of all genes ranked for this timepoint.
-    """
+    """Score one timepoint and save the top panel."""
     perturb_tp = perturb[:, tp_idx]
     rank_score = perturb_tp * transfer
 
@@ -57,19 +42,19 @@ def score_timepoint(
         f"perturbation_{tp}": perturb_tp,
         "transferability": transfer,
         "rank_score": rank_score,
-        # other timepoints for reference
         **{
             f"perturbation_{other}": perturb[:, i]
             for i, other in enumerate(TIMEPOINTS)
             if other != tp
         },
-        # priors for reference
         "prior_dev_slope_ef": priors[:, 0],
         "prior_dev_slope_wc": priors[:, 1],
         "prior_direction_concordance": priors[:, 2],
         "prior_stability": priors[:, 3],
         "prior_baseline_expr": priors[:, 4],
     })
+
+    results = results[results["gene_name"].isin(protein_coding_genes)].copy()
 
     results = results.sort_values("rank_score", ascending=False).reset_index(drop=True)
     results.index = results.index + 1
@@ -112,24 +97,32 @@ def main():
     )
     args = parser.parse_args()
 
-    with open(args.config, "r") as f:
+    with open(resolve_path(args.config), "r") as f:
         config = yaml.safe_load(f)
 
-    output_dir = config["output_dir"]
+    output_dir = resolve_path(config["output_dir"])
     panel_size = args.panel_size or config["panel_size"]
 
-    # load precomputed targets
-    perturb = np.load(os.path.join(output_dir, "perturbation_targets.npy"))   # [n_genes x 3]
-    transfer = np.load(os.path.join(output_dir, "transferability_targets.npy"))  # [n_genes]
+    perturb = np.load(os.path.join(output_dir, "perturbation_targets.npy"))
+    transfer = np.load(os.path.join(output_dir, "transferability_targets.npy"))
     gene_names = np.load(os.path.join(output_dir, "gene_names.npy"), allow_pickle=True)
-    priors = np.load(os.path.join(output_dir, "p_g.npy"))                     # [n_genes x 5]
+    priors = np.load(os.path.join(output_dir, "p_g.npy"))
+    protein_coding_genes = load_protein_coding_genes(resolve_path("MIA_Data/all_counts.csv"))
 
     print(f"Loaded {len(gene_names)} genes")
     print(f"Panel size per timepoint: {panel_size}")
 
     for tp_idx, tp in enumerate(TIMEPOINTS):
         score_timepoint(
-            tp, tp_idx, perturb, transfer, gene_names, priors, panel_size, output_dir
+            tp,
+            tp_idx,
+            perturb,
+            transfer,
+            gene_names,
+            priors,
+            panel_size,
+            output_dir,
+            protein_coding_genes,
         )
 
     print(f"\nDone. CSVs written to {output_dir}/")
